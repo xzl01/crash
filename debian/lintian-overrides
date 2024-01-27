@@ -1,0 +1,3 @@
+# crash contains an embedded version of GDB which has zlib embedded
+crash: embedded-library usr/bin/crash: zlib
+

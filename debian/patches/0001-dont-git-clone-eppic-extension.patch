@@ -1,0 +1,12 @@
+diff -urpN -urpN orig/extensions/eppic.mk new/extensions/eppic.mk
+--- orig/extensions/eppic.mk	2023-04-25 19:53:15.000000000 -0600
++++ new/extensions/eppic.mk	2023-10-28 12:27:49.673513587 -0600
+@@ -35,7 +35,7 @@ all:
+ 		then \
+ 			if  [ ! -f $(APPFILE) ]; \
+ 			then \
+-				if [ -f "$(GIT)" ]; \
++				if [ -f "$(GIT)" -a 0 -gt 1 ]; \
+ 				then \
+ 					if [ -n "$(EPPIC_GIT_URL)" ]; \
+ 					then \

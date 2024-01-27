@@ -1,0 +1,3 @@
+Tests: live
+Restrictions: needs-root isolation-machine
+Depends: @, lsb-release, software-properties-common, sudo
