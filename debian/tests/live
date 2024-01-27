@@ -1,0 +1,22 @@
+#!/bin/sh
+
+set -e
+
+echo "Adding linux-image debug symbols."
+if [ "$(lsb_release -is)" = "Debian" ]; then
+    apt-get update
+    apt-get install linux-image-$(uname -r)-dbg
+elif [ "$(lsb_release -is)" = "Ubuntu" ]; then
+    sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys C8CAB6595FDFF622 2>&1
+    # add available pockets
+    for pocket in "" "-updates" "-proposed"; do
+        apt-add-repository "deb http://ddebs.ubuntu.com/ $(lsb_release -cs)${pocket} main"
+        apt-get update 2>&1 || apt-add-repository --remove "deb http://ddebs.ubuntu.com/ $(lsb_release -cs)${pocket} main"
+    done
+    # avoid stderr output
+    sudo apt-get update
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q linux-image-$(uname -r)-dbgsym
+fi
+
+echo "Testing crash on live kernel"
+crash -st /usr/lib/debug/boot/vmlinux-$(uname -r) 2>&1
