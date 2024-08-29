@@ -1,3 +1,51 @@
+crash (8.0.5-1) unstable; urgency=medium
+
+  * New upstream
+  * ceacceef7d13 crash-8.0.4 -> crash-8.0.5
+  * eedf12d47584 gdb: fix "p" command to print module variables correctly
+  * 7d4daf0c0354 x86_64: Fix "bt" command to handle IRQ exception frames properly
+  * ced754d3f8ce Fix segmentation fault in value_search_module_6_4()
+  * ce47cb8dabb5 x86_64: Fix for "bt" command incorrectly printing "bogus exception frame" warning
+  * 5b24e363a898 get vmalloc start address from vmcoreinfo
+  * 18bf18cf2e6b arm64: Add support for vmemmap symbol in vmcoreinfo
+  * 3f205d1d4af5 LoongArch64: Fixed link errors when build on LOONGARCH64 machine
+  * cc3049044a72 gdb-10.2.patch: Fix duplicated code by re-applying patch
+  * 5977936c0a91 Add "log -c" option to display printk caller id
+  * 3d60d9d40457 Fix "mount" command failure on Linux 6.8-rc1 and later
+  * e924f6d8a1d2 LoongArch64: Add LoongArch64 architecture support information
+  * c3939d2e1930 LoongArch64: Add "--kaslr" command line option support
+  * 0f34aa46cae9 LoongArch64: Add 'irq' command support
+  * be214379cdb9 LoongArch64: Add 'help -r' command support
+  * ab4c69f992ad LoongArch64: Add 'help -m/M' command support
+  * 87f031ada9df LoongArch64: Add 'bt' command support
+  * 756158045183 LoongArch64: Add 'mach' command support
+  * 7b8db357511c LoongArch64: Add 'pte' command support
+  * 89ae0e226fa9 LoongArch64: Make the crash tool successfully enter the crash command line
+  * 35a2472e7a30 Add LoongArch64 framework code support
+  * 28891d112754 symbols: skip the module if the given address is not within its address range
+  * aed1b7d3a064 x86_64: Fix "bt" command not printing stack trace enough
+  * a69496279133 RISCV64: Add per-cpu overflow stacks support
+  * 12fbed3280a1 RISCV64: Add per-cpu IRQ stacks support
+  * d86dc6901ce7 RISCV64: Add support for 'bt -e' option
+  * edb2bd52885c arm64: support HW Tag-Based KASAN (MTE) mode
+  * 53d2577cef98 x86_64: check bt->bptr before calculate framesize
+  * 38435c3acec0 help.c: Remove "kmem -l" help messages
+  * 19d3c56c9fca arm64: rewrite the arm64_get_vmcoreinfo_ul to arm64_get_vmcoreinfo
+  * 9b69093e623f RISCV64: Fix 'bt' output when no ra on the stack top
+  * 5187a0320cc5 RISCV64: Dump NT_PRSTATUS in 'help -n'
+  * d0164e7e480a s390x: uncouple physical and virtual memory spaces
+  * 4c78eb4a9199 s390x: fix virtual vs physical address confusion
+  * 2e513114e7d7 Fix identity_map_base value dump on S390
+  * c15da0752629 use NR_SWAPCACHE when nr_swapper_spaces isn't available
+  * 0c5ef6a4a3a2 symbols: skip load .init.* sections if module was successfully initialized
+  * f2ee6fa6c841 symbols: expand all kernel module symtable if not all expanded previously
+  * 582febffa8b3 zram: Fixes for lookup_swap_cache()
+  * d65e5d3eae0d Fix typos in offset_table and missing "help -o" items
+  * 38acd02c7fc0 Fix "rd" command for zram data display in Linux 6.2 and later
+  * 61c8fdb1d7f7 Mark start of 8.0.5 development phase with version 8.0.4++
+
+ -- Troy Heber <troyh@debian.org>  Tue, 30 Apr 2024 15:04:19 -0600
+
 crash (8.0.4-1) unstable; urgency=medium
 
   * New upstream (Closes: #1057009)

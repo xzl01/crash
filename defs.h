@@ -76,7 +76,7 @@
 #if !defined(X86) && !defined(X86_64) && !defined(ALPHA) && !defined(PPC) && \
     !defined(IA64) && !defined(PPC64) && !defined(S390) && !defined(S390X) && \
     !defined(ARM) && !defined(ARM64) && !defined(MIPS) && !defined(MIPS64) && \
-    !defined(RISCV64) && !defined(SPARC64)
+    !defined(RISCV64) && !defined(LOONGARCH64) && !defined(SPARC64)
 #ifdef __alpha__
 #define ALPHA
 #endif
@@ -121,6 +121,9 @@
 #if defined(__riscv) && (__riscv_xlen == 64)
 #define RISCV64
 #endif
+#ifdef __loongarch64
+#define LOONGARCH64
+#endif
 #endif
 
 #ifdef X86
@@ -163,6 +166,9 @@
 #define NR_CPUS  (4096)
 #endif
 #ifdef RISCV64
+#define NR_CPUS  (256)
+#endif
+#ifdef LOONGARCH64
 #define NR_CPUS  (256)
 #endif
 
@@ -2112,13 +2118,13 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long bpf_prog_aux_name;
 	long page_private;
 	long swap_info_struct_bdev;
-	long zram_mempoll;
+	long zram_mem_pool;
 	long zram_compressor;
-	long zram_table_flag;
-	long zspoll_size_class;
+	long zram_table_entry_flags;
+	long zs_pool_size_class;
 	long size_class_size;
 	long gendisk_private_data;
-	long zram_table_entry;
+	long zram_table_entry;	/* unused; but cannot remove */
 	long module_core_size_rw;
 	long module_core_size_rx;
 	long module_init_size_rw;
@@ -2227,6 +2233,13 @@ struct offset_table {                    /* stash of commonly-used offsets */
 	long module_memory_size;
 	long irq_data_irq;
 	long zspage_huge;
+	long zram_comp_algs;
+	long task_struct_thread_reg01;
+	long task_struct_thread_reg03;
+	long mnt_namespace_mounts;
+	long mnt_namespace_nr_mounts;
+	long mount_mnt_node;
+	long log_caller_id;
 };
 
 struct size_table {         /* stash of commonly-used sizes */
@@ -3347,6 +3360,7 @@ typedef signed int s32;
 #define FLIPPED_VM    (0x400)
 #define HAS_PHYSVIRT_OFFSET (0x800)
 #define OVERFLOW_STACKS     (0x1000)
+#define ARM64_MTE     (0x2000)
 
 /*
  * Get kimage_voffset from /dev/crash
@@ -3485,6 +3499,7 @@ struct machine_specific {
 	ulong CONFIG_ARM64_KERNELPACMASK;
 	ulong physvirt_offset;
 	ulong struct_page_size;
+	ulong vmemmap;
 };
 
 struct arm64_stackframe {
@@ -3641,6 +3656,8 @@ typedef signed int s32;
 #define pmd_index_l5_4k(addr) (((addr) >> PMD_SHIFT) & (PTRS_PER_PMD - 1))
 #define pte_index_l5_4k(addr) (((addr) >> PAGESHIFT()) & (PTRS_PER_PTE - 1))
 
+/* machdep->flags */
+#define KSYMS_START	(0x1)
 #define VM_L3_4K	(0x2)
 #define VM_L3_2M	(0x4)
 #define VM_L3_1G	(0x8)
@@ -3650,6 +3667,10 @@ typedef signed int s32;
 #define VM_L5_4K	(0x80)
 #define VM_L5_2M	(0x100)
 #define VM_L5_1G	(0x200)
+#define IRQ_STACKS	(0x400)
+#define OVERFLOW_STACKS     (0x800)
+
+#define RISCV64_OVERFLOW_STACK_SIZE (1 << 12)
 
 #define VM_FLAGS	(VM_L3_4K | VM_L3_2M | VM_L3_1G | \
 			 VM_L4_4K | VM_L4_2M | VM_L4_1G | \
@@ -3714,6 +3735,48 @@ typedef signed int s32;
     }
 
 #endif  /* RISCV64 */
+
+/* fix compilation errors due to elf.h version. */
+#ifndef EM_LOONGARCH
+#define EM_LOONGARCH   258
+#endif
+
+#ifdef LOONGARCH64
+#define	_64BIT_
+#define MACHINE_TYPE		"LOONGARCH64"
+
+#define PAGEBASE(X)		(((ulong)(X)) & (ulong)machdep->pagemask)
+
+#define IS_XKPRANGE(X)		(((X) >= 0x8000000000000000lu) && \
+				((X) < 0xc000000000000000lu))
+
+#define PTOV(X)			((ulong)(X) + 0x9000000000000000lu)
+#define VTOP(X)			((ulong)(X) & 0x0000fffffffffffflu)
+
+#define IS_VMALLOC_ADDR(X) (vt->vmalloc_start && (ulong)(X) >= vt->vmalloc_start)
+
+#define DEFAULT_MODULES_VADDR	0xffff800000000000lu
+#define MODULES_VADDR		(machdep->machspec->modules_vaddr)
+#define MODULES_END		(machdep->machspec->modules_end)
+#define VMALLOC_START		(machdep->machspec->vmalloc_start_addr)
+#define VMALLOC_END		(machdep->machspec->vmalloc_end)
+
+#define __SWP_TYPE_SHIFT	16
+#define __SWP_TYPE_BITS		8
+#define __SWP_TYPE_MASK		((1 << __SWP_TYPE_BITS) - 1)
+#define __SWP_OFFSET_SHIFT	(__SWP_TYPE_BITS + __SWP_TYPE_SHIFT)
+
+#define SWP_TYPE(entry)		(((entry) >> __SWP_TYPE_SHIFT) & __SWP_TYPE_MASK)
+#define SWP_OFFSET(entry)	((entry) >> __SWP_OFFSET_SHIFT)
+
+#define __swp_type(entry)	SWP_TYPE(entry)
+#define __swp_offset(entry)	SWP_OFFSET(entry)
+
+#define TIF_SIGPENDING		(1)
+
+#define _SECTION_SIZE_BITS	28
+#define _MAX_PHYSMEM_BITS	48
+#endif  /* LOONGARCH64 */
 
 #ifdef X86
 #define _32BIT_
@@ -4563,9 +4626,9 @@ struct efi_memory_desc_t {
 #define _64BIT_
 #define MACHINE_TYPE       "S390X"
 
-#define PTOV(X)            ((unsigned long)(X)+(machdep->kvbase))
-#define VTOP(X)            ((unsigned long)(X)-(machdep->kvbase))
-#define IS_VMALLOC_ADDR(X) (vt->vmalloc_start && (ulong)(X) >= vt->vmalloc_start)
+#define PTOV(X)            s390x_PTOV((ulong)(X))
+#define VTOP(X)            s390x_VTOP((ulong)(X))
+#define IS_VMALLOC_ADDR(X) s390x_IS_VMALLOC_ADDR(X)
 #define PTRS_PER_PTE    512
 #define PTRS_PER_PMD    1024
 #define PTRS_PER_PGD    2048
@@ -4764,6 +4827,10 @@ struct machine_specific {
 #define UVADDR_PRLEN      (16)
 #endif
 #ifdef RISCV64
+#define MAX_HEXADDR_STRLEN (16)
+#define UVADDR_PRLEN       (16)
+#endif
+#ifdef LOONGARCH64
 #define MAX_HEXADDR_STRLEN (16)
 #define UVADDR_PRLEN       (16)
 #endif
@@ -5388,6 +5455,9 @@ void dump_build_data(void);
 #ifdef SPARC64
 #define machdep_init(X) sparc64_init(X)
 #endif
+#ifdef LOONGARCH64
+#define machdep_init(X) loongarch64_init(X)
+#endif
 int clean_exit(int);
 int untrusted_file(FILE *, char *);
 char *readmem_function_name(void);
@@ -5879,6 +5949,10 @@ void display_help_screen(char *);
 #ifdef RISCV64
 #define dump_machdep_table(X) riscv64_dump_machdep_table(X)
 #endif
+#ifdef LOONGARCH64
+#define dump_machdep_table(X) loongarch64_dump_machdep_table(X)
+#endif
+
 extern char *help_pointer[];
 extern char *help_alias[];
 extern char *help_ascii[];
@@ -6036,12 +6110,13 @@ void dump_log(int);
 void parse_kernel_version(char *);
 
 #define LOG_LEVEL(v) ((v) & 0x07)
-#define SHOW_LOG_LEVEL (0x1)
-#define SHOW_LOG_DICT  (0x2)
-#define SHOW_LOG_TEXT  (0x4)
-#define SHOW_LOG_AUDIT (0x8)
-#define SHOW_LOG_CTIME (0x10)
-#define SHOW_LOG_SAFE  (0x20)
+#define SHOW_LOG_LEVEL    (0x1)
+#define SHOW_LOG_DICT     (0x2)
+#define SHOW_LOG_TEXT     (0x4)
+#define SHOW_LOG_AUDIT    (0x8)
+#define SHOW_LOG_CTIME   (0x10)
+#define SHOW_LOG_SAFE    (0x20)
+#define SHOW_LOG_CALLER  (0x40)
 void set_cpu(int);
 void clear_machdep_cache(void);
 struct stack_hook *gather_text_list(struct bt_info *);
@@ -6826,7 +6901,21 @@ void get_s390_panicmsg(char *);
  *  s390x.c
  */
 #ifdef S390X
+
+struct machine_specific
+{
+	ulong (*virt_to_phys)(ulong vaddr);
+	ulong (*phys_to_virt)(ulong paddr);
+	int (*is_vmalloc_addr)(ulong vaddr);
+	ulong __kaslr_offset_phys;
+	ulong amode31_start;
+	ulong amode31_end;
+};
+
 void s390x_init(int);
+ulong s390x_PTOV(ulong);
+ulong s390x_VTOP(ulong);
+int s390x_IS_VMALLOC_ADDR(ulong);
 void s390x_dump_machdep_table(ulong);
 #define display_idt_table() \
         error(FATAL, "-d option is not applicable to S390X architecture\n")
@@ -6995,15 +7084,14 @@ int riscv64_IS_VMALLOC_ADDR(ulong);
 #define display_idt_table() \
 	error(FATAL, "-d option is not applicable to RISCV64 architecture\n")
 
-/* from arch/riscv/include/asm/ptrace.h */
+/*
+ * regs[0,31] : struct user_regs_struct
+ * 		from arch/riscv/include/uapi/asm/ptrace.h
+ * regs[0,35] : struct pt_regs
+ * 		from arch/riscv/include/asm/ptrace.h
+ */
 struct riscv64_register {
 	ulong regs[36];
-};
-
-struct riscv64_pt_regs {
-	ulong badvaddr;
-	ulong cause;
-	ulong epc;
 };
 
 struct riscv64_unwind_frame {
@@ -7011,8 +7099,6 @@ struct riscv64_unwind_frame {
 	ulong sp;
 	ulong pc;
 };
-
-#define KSYMS_START	(0x1)
 
 struct machine_specific {
 	ulong phys_base;
@@ -7043,6 +7129,11 @@ struct machine_specific {
 	ulong struct_page_size;
 
 	struct riscv64_register *crash_task_regs;
+	ulong irq_stack_size;
+	ulong *irq_stacks;
+
+	ulong overflow_stack_size;
+	ulong *overflow_stacks;
 };
 /* from arch/riscv/include/asm/pgtable-bits.h */
 #define _PAGE_PRESENT	(machdep->machspec->_page_present)
@@ -7069,6 +7160,8 @@ struct machine_specific {
 #define RISCV64_REGS_RA   1
 #define RISCV64_REGS_SP   2
 #define RISCV64_REGS_FP   8
+#define RISCV64_REGS_STATUS	32
+#define RISCV64_REGS_CAUSE	34
 
 #endif /* RISCV64 */
 
@@ -7082,6 +7175,107 @@ int sparc64_vmalloc_addr(ulong);
 #define display_idt_table() \
 	error(FATAL, "The -d option is not applicable to sparc64.\n")
 #endif
+
+/*
+ * loongarch64.c
+ */
+void loongarch64_display_regs_from_elf_notes(int, FILE *);
+#ifdef LOONGARCH64
+void loongarch64_init(int);
+void loongarch64_dump_machdep_table(ulong);
+
+#define display_idt_table() \
+	error(FATAL, "-d option is not applicable to LOONGARCH64 architecture\n")
+
+
+#define KSYMS_START     (0x1)
+
+struct machine_specific {
+	ulong phys_base;
+	ulong vmalloc_start_addr;
+	ulong modules_vaddr;
+	ulong modules_end;
+
+	struct loongarch64_pt_regs *crash_task_regs;
+};
+
+/*
+ * Basic page table format:
+ *
+ *   63  62 61       PALEN-1            12      10 9  8 7 6 5 4 3 2 1 0
+ * +----+--+--+------+--------------------+----+--+--+-+-+-+---+---+-+-+
+ * |RPLV|NX|NR|      |  PA[PALEN-1:12]    |    |SP|PN|W|P|G|MAT|PLV|D|V|
+ * +----+--+--+------+--------------------+----+--+--+-+-+-+---+---+-+-+
+ *
+ *
+ * Huge page table format:
+ *
+ *   63  62 61       PALEN-1            12      10 9  8 7 6 5 4 3 2 1 0
+ * +----+--+--+------+-----------------+--+----+--+--+-+-+-+---+---+-+-+
+ * |RPLV|NX|NR|      |  PA[PALEN-1:12] | G|    |SP|PN|W|P|H|MAT|PLV|D|V|
+ * +----+--+--+------+-----------------+--+----+--+--+-+-+-+---+---+-+-+
+ *
+ */
+/* from arch/loongarch/include/asm/pgtable-bits.h */
+
+/* Page table bits */
+#define	_PAGE_VALID_SHIFT	0
+#define	_PAGE_ACCESSED_SHIFT	0  /* Reuse Valid for Accessed */
+#define	_PAGE_DIRTY_SHIFT	1
+#define	_PAGE_PLV_SHIFT		2  /* 2~3, two bits */
+#define	_CACHE_SHIFT		4  /* 4~5, two bits */
+#define	_PAGE_GLOBAL_SHIFT	6
+#define	_PAGE_HUGE_SHIFT	6  /* HUGE is a PMD bit */
+#define	_PAGE_PRESENT_SHIFT	7
+#define	_PAGE_WRITE_SHIFT	8
+#define	_PAGE_MODIFIED_SHIFT	9
+#define	_PAGE_PROTNONE_SHIFT	10
+#define	_PAGE_SPECIAL_SHIFT	11
+#define	_PAGE_HGLOBAL_SHIFT	12 /* HGlobal is a PMD bit */
+#define	_PAGE_PFN_SHIFT		12
+#define	_PAGE_SWP_EXCLUSIVE_SHIFT 23
+#define	_PAGE_PFN_END_SHIFT	48
+#define	_PAGE_PRESENT_INVALID_SHIFT 60
+#define	_PAGE_NO_READ_SHIFT	61
+#define	_PAGE_NO_EXEC_SHIFT	62
+#define	_PAGE_RPLV_SHIFT	63
+
+#ifndef _ULCAST_
+#define _ULCAST_ (unsigned long)
+#endif
+
+/* Used by software */
+#define _PAGE_PRESENT		(_ULCAST_(1) << _PAGE_PRESENT_SHIFT)
+#define _PAGE_PRESENT_INVALID	(_ULCAST_(1) << _PAGE_PRESENT_INVALID_SHIFT)
+#define _PAGE_WRITE		(_ULCAST_(1) << _PAGE_WRITE_SHIFT)
+#define _PAGE_ACCESSED		(_ULCAST_(1) << _PAGE_ACCESSED_SHIFT)
+#define _PAGE_MODIFIED		(_ULCAST_(1) << _PAGE_MODIFIED_SHIFT)
+#define _PAGE_PROTNONE		(_ULCAST_(1) << _PAGE_PROTNONE_SHIFT)
+#define _PAGE_SPECIAL		(_ULCAST_(1) << _PAGE_SPECIAL_SHIFT)
+
+/* We borrow bit 23 to store the exclusive marker in swap PTEs. */
+#define _PAGE_SWP_EXCLUSIVE	(_ULCAST_(1) << _PAGE_SWP_EXCLUSIVE_SHIFT)
+
+/* Used by TLB hardware (placed in EntryLo*) */
+#define _PAGE_VALID		(_ULCAST_(1) << _PAGE_VALID_SHIFT)
+#define _PAGE_DIRTY		(_ULCAST_(1) << _PAGE_DIRTY_SHIFT)
+#define _PAGE_PLV		(_ULCAST_(3) << _PAGE_PLV_SHIFT)
+#define _PAGE_GLOBAL		(_ULCAST_(1) << _PAGE_GLOBAL_SHIFT)
+#define _PAGE_HUGE		(_ULCAST_(1) << _PAGE_HUGE_SHIFT)
+#define _PAGE_HGLOBAL		(_ULCAST_(1) << _PAGE_HGLOBAL_SHIFT)
+#define _PAGE_NO_READ		(_ULCAST_(1) << _PAGE_NO_READ_SHIFT)
+#define _PAGE_NO_EXEC		(_ULCAST_(1) << _PAGE_NO_EXEC_SHIFT)
+#define _PAGE_RPLV		(_ULCAST_(1) << _PAGE_RPLV_SHIFT)
+#define _CACHE_MASK		(_ULCAST_(3) << _CACHE_SHIFT)
+#define _PFN_SHIFT		(PAGESHIFT() - 12 + _PAGE_PFN_SHIFT)
+
+#define _PAGE_USER	(PLV_USER << _PAGE_PLV_SHIFT)
+#define _PAGE_KERN	(PLV_KERN << _PAGE_PLV_SHIFT)
+
+#define _PFN_MASK (~((_ULCAST_(1) << (_PFN_SHIFT)) - 1) & \
+		  ((_ULCAST_(1) << (_PAGE_PFN_END_SHIFT)) - 1))
+
+#endif /* LOONGARCH64 */
 
 /*
  *  netdump.c 
@@ -7396,6 +7590,10 @@ int calc_kaslr_offset(ulong *, ulong *);
  * printk.c
  */
 void dump_lockless_record_log(int);
+
+/* caller_id default and max character sizes based on pid field size */
+#define PID_CHARS_MAX 16        /* Max Number of PID characters */
+#define PID_CHARS_DEFAULT 8     /* Default number of PID characters */
 
 /*
  *  gnu_binutils.c

@@ -33,8 +33,11 @@ static int riscv64_uvtop(struct task_context *tc, ulong vaddr,
 static int riscv64_kvtop(struct task_context *tc, ulong kvaddr,
 			  physaddr_t *paddr, int verbose);
 static void riscv64_cmd_mach(void);
+static void riscv64_irq_stack_init(void);
+static void riscv64_overflow_stack_init(void);
 static void riscv64_stackframe_init(void);
 static void riscv64_back_trace_cmd(struct bt_info *bt);
+static int riscv64_eframe_search(struct bt_info *bt);
 static int riscv64_get_dumpfile_stack_frame(struct bt_info *bt,
 					     ulong *nip, ulong *ksp);
 static void riscv64_get_stack_frame(struct bt_info *bt, ulong *pcp,
@@ -51,9 +54,19 @@ static int riscv64_get_elf_notes(void);
 static void riscv64_get_va_range(struct machine_specific *ms);
 static void riscv64_get_va_bits(struct machine_specific *ms);
 static void riscv64_get_struct_page_size(struct machine_specific *ms);
+static void riscv64_print_exception_frame(struct bt_info *, ulong , int );
+static int riscv64_is_kernel_exception_frame(struct bt_info *, ulong );
+static int riscv64_on_irq_stack(int , ulong);
+static int riscv64_on_process_stack(struct bt_info *, ulong );
+static void riscv64_set_process_stack(struct bt_info *);
+static void riscv64_set_irq_stack(struct bt_info *);
+static int riscv64_on_overflow_stack(int, ulong);
+static void riscv64_set_overflow_stack(struct bt_info *);
 
 #define REG_FMT 	"%016lx"
 #define SZ_2G		0x80000000
+#define USER_MODE	(0)
+#define KERNEL_MODE	(1)
 
 /*
  * Holds registers during the crash.
@@ -188,11 +201,16 @@ riscv64_verify_symbol(const char *name, ulong value, char type)
 void
 riscv64_dump_machdep_table(ulong arg)
 {
-	int others = 0;
+	const struct machine_specific *ms = machdep->machspec;
+	int others = 0, i = 0;
 
 	fprintf(fp, "              flags: %lx (", machdep->flags);
 	if (machdep->flags & KSYMS_START)
 		fprintf(fp, "%sKSYMS_START", others++ ? "|" : "");
+	if (machdep->flags & IRQ_STACKS)
+		fprintf(fp, "%sIRQ_STACKS", others++ ? "|" : "");
+	if (machdep->flags & OVERFLOW_STACKS)
+		fprintf(fp, "%sOVERFLOW_STACKS", others++ ? "|" : "");
 	fprintf(fp, ")\n");
 
 	fprintf(fp, "             kvbase: %lx\n", machdep->kvbase);
@@ -210,6 +228,7 @@ riscv64_dump_machdep_table(ulong arg)
 		machdep->memsize, machdep->memsize);
 	fprintf(fp, "               bits: %d\n", machdep->bits);
 	fprintf(fp, "         back_trace: riscv64_back_trace_cmd()\n");
+	fprintf(fp, "      eframe_search: riscv64_eframe_search()\n");
 	fprintf(fp, "    processor_speed: riscv64_processor_speed()\n");
 	fprintf(fp, "              uvtop: riscv64_uvtop()\n");
 	fprintf(fp, "              kvtop: riscv64_kvtop()\n");
@@ -247,6 +266,24 @@ riscv64_dump_machdep_table(ulong arg)
 	fprintf(fp, "   max_physmem_bits: %ld\n", machdep->max_physmem_bits);
 	fprintf(fp, "  sections_per_root: %ld\n", machdep->sections_per_root);
 	fprintf(fp, "           machspec: %lx\n", (ulong)machdep->machspec);
+	if (machdep->flags & IRQ_STACKS) {
+		fprintf(fp, "        irq_stack_size: %ld\n", ms->irq_stack_size);
+		for (i = 0; i < kt->cpus; i++)
+			fprintf(fp, "         irq_stacks[%d]: %lx\n",
+				i, ms->irq_stacks[i]);
+	} else {
+		fprintf(fp, "        irq_stack_size: (unused)\n");
+		fprintf(fp, "            irq_stacks: (unused)\n");
+	}
+	if (machdep->flags & OVERFLOW_STACKS) {
+		fprintf(fp, "        overflow_stack_size: %ld\n", ms->overflow_stack_size);
+		for (i = 0; i < kt->cpus; i++)
+			fprintf(fp, "         overflow_stacks[%d]: %lx\n",
+				i, ms->overflow_stacks[i]);
+	} else {
+		fprintf(fp, "        overflow_stack_size: (unused)\n");
+		fprintf(fp, "            overflow_stacks: (unused)\n");
+	}
 }
 
 static ulong
@@ -661,6 +698,180 @@ riscv64_display_full_frame(struct bt_info *bt, struct riscv64_unwind_frame *curr
 	fprintf(fp, "\n");
 }
 
+
+/*
+ * Gather Overflow stack values.
+ */
+static void
+riscv64_overflow_stack_init(void)
+{
+	int i;
+	struct syment *sp;
+	struct gnu_request request, *req;
+	struct machine_specific *ms = machdep->machspec;
+	req = &request;
+
+	if (symbol_exists("overflow_stack") &&
+	    (sp = per_cpu_symbol_search("overflow_stack")) &&
+	    get_symbol_type("overflow_stack", NULL, req)) {
+		if (CRASHDEBUG(1)) {
+			fprintf(fp, "overflow_stack: \n");
+			fprintf(fp, "  type: %x, %s\n",
+				(int)req->typecode,
+				(req->typecode == TYPE_CODE_ARRAY) ?
+						"TYPE_CODE_ARRAY" : "other");
+			fprintf(fp, "  target_typecode: %x, %s\n",
+				(int)req->target_typecode,
+				req->target_typecode == TYPE_CODE_INT ?
+						"TYPE_CODE_INT" : "other");
+			fprintf(fp, "  target_length: %ld\n",
+						req->target_length);
+			fprintf(fp, "  length: %ld\n", req->length);
+		}
+
+		if (!(ms->overflow_stacks = (ulong *)malloc((size_t)(kt->cpus * sizeof(ulong)))))
+			error(FATAL, "cannot malloc overflow_stack addresses\n");
+
+		ms->overflow_stack_size = RISCV64_OVERFLOW_STACK_SIZE;
+		machdep->flags |= OVERFLOW_STACKS;
+
+		for (i = 0; i < kt->cpus; i++)
+			ms->overflow_stacks[i] = kt->__per_cpu_offset[i] + sp->value;
+	}
+}
+
+/*
+ * Gather IRQ stack values.
+ */
+static void
+riscv64_irq_stack_init(void)
+{
+	int i;
+	struct syment *sp;
+	struct gnu_request request, *req;
+	struct machine_specific *ms = machdep->machspec;
+	ulong p, sz;
+	req = &request;
+
+	if (symbol_exists("irq_stack_ptr") &&
+	    (sp = per_cpu_symbol_search("irq_stack_ptr")) &&
+	    get_symbol_type("irq_stack_ptr", NULL, req)) {
+		if (CRASHDEBUG(1)) {
+			fprintf(fp, "irq_stack_ptr: \n");
+			fprintf(fp, "  type: %x, %s\n",
+				(int)req->typecode,
+				(req->typecode == TYPE_CODE_PTR) ?
+						"TYPE_CODE_PTR" : "other");
+			fprintf(fp, "  target_typecode: %x, %s\n",
+				(int)req->target_typecode,
+				req->target_typecode == TYPE_CODE_INT ?
+						"TYPE_CODE_INT" : "other");
+			fprintf(fp, "  target_length: %ld\n",
+						req->target_length);
+			fprintf(fp, "  length: %ld\n", req->length);
+		}
+
+		if (!(ms->irq_stacks = (ulong *)malloc((size_t)(kt->cpus * sizeof(ulong)))))
+			error(FATAL, "cannot malloc irq_stack addresses\n");
+
+		/*
+		 * find IRQ_STACK_SIZE (i.e. THREAD_SIZE) via thread_union.stack
+		 * or set STACKSIZE() as default.
+		 */
+		if (MEMBER_EXISTS("thread_union", "stack")) {
+			if ((sz = MEMBER_SIZE("thread_union", "stack")) > 0)
+				ms->irq_stack_size = sz;
+		} else
+			ms->irq_stack_size = machdep->stacksize;
+
+		machdep->flags |= IRQ_STACKS;
+
+		for (i = 0; i < kt->cpus; i++) {
+			p = kt->__per_cpu_offset[i] + sp->value;
+			if (CRASHDEBUG(1))
+				fprintf(fp, " IRQ stack pointer[%d] is  %lx\n", i, p);
+			readmem(p, KVADDR, &(ms->irq_stacks[i]), sizeof(ulong),
+				"IRQ stack pointer", RETURN_ON_ERROR);
+		}
+	}
+}
+
+static int
+riscv64_on_irq_stack(int cpu, ulong stkptr)
+{
+	struct machine_specific *ms = machdep->machspec;
+	ulong * stacks = ms->irq_stacks;
+	ulong stack_size = ms->irq_stack_size;
+
+	if ((cpu >= kt->cpus) || (stacks == NULL) || !stack_size)
+		return FALSE;
+
+	if ((stkptr >= stacks[cpu]) &&
+	    (stkptr < (stacks[cpu] + stack_size)))
+		return TRUE;
+
+	return FALSE;
+}
+
+static int
+riscv64_on_overflow_stack(int cpu, ulong stkptr)
+{
+	struct machine_specific *ms = machdep->machspec;
+	ulong * stacks = ms->overflow_stacks;
+	ulong stack_size = ms->overflow_stack_size;
+
+	if ((cpu >= kt->cpus) || (stacks == NULL) || !stack_size)
+		return FALSE;
+
+	if ((stkptr >= stacks[cpu]) &&
+	    (stkptr < (stacks[cpu] + stack_size)))
+		return TRUE;
+
+	return FALSE;
+}
+
+static int
+riscv64_on_process_stack(struct bt_info *bt, ulong stkptr)
+{
+	ulong stackbase, stacktop;
+
+	stackbase = GET_STACKBASE(bt->task);
+	stacktop = GET_STACKTOP(bt->task);
+
+	if ((stkptr >= stackbase) && (stkptr < stacktop))
+		return TRUE;
+
+	return FALSE;
+}
+
+static void
+riscv64_set_irq_stack(struct bt_info *bt)
+{
+	struct machine_specific *ms = machdep->machspec;
+
+	bt->stackbase = ms->irq_stacks[bt->tc->processor];
+	bt->stacktop = bt->stackbase + ms->irq_stack_size;
+	alter_stackbuf(bt);
+}
+
+static void
+riscv64_set_overflow_stack(struct bt_info *bt)
+{
+	struct machine_specific *ms = machdep->machspec;
+
+	bt->stackbase = ms->overflow_stacks[bt->tc->processor];
+	bt->stacktop = bt->stackbase + ms->overflow_stack_size;
+	alter_stackbuf(bt);
+}
+
+static void
+riscv64_set_process_stack(struct bt_info *bt)
+{
+	bt->stackbase = GET_STACKBASE(bt->task);
+	bt->stacktop = GET_STACKTOP(bt->task);
+	alter_stackbuf(bt);
+}
+
 static void
 riscv64_stackframe_init(void)
 {
@@ -747,10 +958,23 @@ riscv64_back_trace_cmd(struct bt_info *bt)
 {
 	struct riscv64_unwind_frame current, previous;
 	struct stackframe curr_frame;
+	struct riscv64_register *regs, *irq_regs, *overflow_regs;
 	int level = 0;
 
 	if (bt->flags & BT_REGS_NOT_FOUND)
 		return;
+
+	regs = (struct riscv64_register *) bt->machdep;
+
+	if (riscv64_on_irq_stack(bt->tc->processor, bt->frameptr)) {
+		riscv64_set_irq_stack(bt);
+		bt->flags |= BT_IRQSTACK;
+	}
+
+	if (riscv64_on_overflow_stack(bt->tc->processor, bt->frameptr)) {
+		riscv64_set_overflow_stack(bt);
+		bt->flags |= BT_OVERFLOW_STACK;
+	}
 
 	current.pc = bt->instptr;
 	current.sp = bt->stkptr;
@@ -788,8 +1012,16 @@ riscv64_back_trace_cmd(struct bt_info *bt)
 		    sizeof(curr_frame), "get stack frame", RETURN_ON_ERROR))
 			return;
 
-		previous.pc = curr_frame.ra;
-		previous.fp = curr_frame.fp;
+		/* correct PC and FP of the second frame when the first frame has no callee */
+
+		if (regs && (regs->regs[RISCV64_REGS_EPC] == current.pc) && curr_frame.fp & 0x7){
+			previous.pc = regs->regs[RISCV64_REGS_RA];
+			previous.fp = curr_frame.ra;
+		} else {
+			previous.pc = curr_frame.ra;
+			previous.fp = curr_frame.fp;
+		}
+
 		previous.sp = current.fp;
 
 		riscv64_dump_backtrace_entry(bt, symbol, &current, &previous, level++);
@@ -797,6 +1029,57 @@ riscv64_back_trace_cmd(struct bt_info *bt)
 		current.pc = previous.pc;
 		current.fp = previous.fp;
 		current.sp = previous.sp;
+
+		/*
+		 * When backtracing to do_irq(), find the original FP of do_irq()
+		 * and then use the saved pt_regs in process stack to continue
+		 */
+		if ((bt->flags & BT_IRQSTACK) &&
+		    !riscv64_on_irq_stack(bt->tc->processor, current.fp)){
+			if (riscv64_on_process_stack(bt, current.fp)){
+
+				frameptr = (struct stackframe *)current.fp - 1;
+
+				if (!readmem((ulong)frameptr, KVADDR, &curr_frame,
+				    sizeof(curr_frame), "get do_irq stack frame", RETURN_ON_ERROR))
+					return;
+
+				riscv64_set_process_stack(bt);
+
+				irq_regs = (struct riscv64_register *)
+					&bt->stackbuf[(ulong)(STACK_OFFSET_TYPE(curr_frame.fp))];
+
+				current.pc = irq_regs->regs[RISCV64_REGS_EPC];
+				current.fp = irq_regs->regs[RISCV64_REGS_FP];
+				current.sp = irq_regs->regs[RISCV64_REGS_SP];
+
+				bt->flags &= ~BT_IRQSTACK;
+				riscv64_print_exception_frame(bt, curr_frame.fp, KERNEL_MODE);
+				fprintf(fp, "--- <IRQ stack> ---\n");
+			}
+		}
+
+		/*
+		 * When backtracing to handle_kernel_stack_overflow()
+		 * use pt_regs saved in overflow stack to continue
+		 */
+		if ((bt->flags & BT_OVERFLOW_STACK) &&
+		    !riscv64_on_overflow_stack(bt->tc->processor, current.fp)) {
+
+				overflow_regs = (struct riscv64_register *)
+					&bt->stackbuf[(ulong)(STACK_OFFSET_TYPE(current.sp))];
+
+				riscv64_print_exception_frame(bt, current.sp, KERNEL_MODE);
+
+				current.pc = overflow_regs->regs[RISCV64_REGS_EPC];
+				current.fp = overflow_regs->regs[RISCV64_REGS_FP];
+				current.sp = overflow_regs->regs[RISCV64_REGS_SP];
+
+				riscv64_set_process_stack(bt);
+
+				bt->flags &= ~BT_OVERFLOW_STACK;
+				fprintf(fp, "--- <OVERFLOW stack> ---\n");
+		}
 
 		if (CRASHDEBUG(8))
 			fprintf(fp, "next %d pc %#lx sp %#lx fp %lx\n",
@@ -1387,6 +1670,7 @@ riscv64_init(int when)
 		machdep->cmd_mach = riscv64_cmd_mach;
 		machdep->get_stack_frame = riscv64_get_stack_frame;
 		machdep->back_trace = riscv64_back_trace_cmd;
+		machdep->eframe_search = riscv64_eframe_search;
 
 		machdep->vmalloc_start = riscv64_vmalloc_start;
 		machdep->processor_speed = riscv64_processor_speed;
@@ -1407,6 +1691,9 @@ riscv64_init(int when)
 	case POST_GDB:
 		machdep->section_size_bits = _SECTION_SIZE_BITS;
 		machdep->max_physmem_bits = _MAX_PHYSMEM_BITS;
+
+		riscv64_irq_stack_init();
+		riscv64_overflow_stack_init();
 		riscv64_stackframe_init();
 		riscv64_page_type_init();
 
@@ -1441,25 +1728,10 @@ riscv64_init(int when)
 	}
 }
 
-/*
- * 'help -r' command output
- */
-void
-riscv64_display_regs_from_elf_notes(int cpu, FILE *ofp)
+/* bool pt_regs : pass 1 to dump pt_regs , pass 0 to dump user_regs_struct */
+static void
+riscv64_dump_pt_regs(struct riscv64_register *regs, FILE *ofp, bool pt_regs)
 {
-	const struct machine_specific *ms = machdep->machspec;
-	struct riscv64_register *regs;
-
-	if (!ms->crash_task_regs) {
-		error(INFO, "registers not collected for cpu %d\n", cpu);
-		return;
-	}
-
-	regs = &ms->crash_task_regs[cpu];
-	if (!regs->regs[RISCV64_REGS_SP] && !regs->regs[RISCV64_REGS_EPC]) {
-		error(INFO, "registers not collected for cpu %d\n", cpu);
-		return;
-	}
 
 	/* Print riscv64 32 regs */
 	fprintf(ofp,
@@ -1485,6 +1757,194 @@ riscv64_display_regs_from_elf_notes(int cpu, FILE *ofp)
 		regs->regs[24], regs->regs[25], regs->regs[26],
 		regs->regs[27], regs->regs[28], regs->regs[29],
 		regs->regs[30], regs->regs[31]);
+
+	if (pt_regs)
+		fprintf(ofp,
+		" status: " REG_FMT " badaddr: " REG_FMT "\n"
+		"  cause: " REG_FMT " orig_a0: " REG_FMT "\n",
+		regs->regs[32], regs->regs[33], regs->regs[34],
+		regs->regs[35]);
+}
+
+/*
+ * 'help -r' command output
+ */
+void
+riscv64_display_regs_from_elf_notes(int cpu, FILE *ofp)
+{
+	const struct machine_specific *ms = machdep->machspec;
+	struct riscv64_register *regs;
+
+	if (!ms->crash_task_regs) {
+		error(INFO, "registers not collected for cpu %d\n", cpu);
+		return;
+	}
+
+	regs = &ms->crash_task_regs[cpu];
+	if (!regs->regs[RISCV64_REGS_SP] && !regs->regs[RISCV64_REGS_EPC]) {
+		error(INFO, "registers not collected for cpu %d\n", cpu);
+		return;
+	}
+
+	riscv64_dump_pt_regs(regs, ofp, 0);
+}
+
+static void
+riscv64_print_exception_frame(struct bt_info *bt, ulong ptr, int mode)
+{
+
+	struct syment *sp;
+	ulong PC, RA, SP, offset;
+	struct riscv64_register *regs;
+
+	regs = (struct riscv64_register *)&bt->stackbuf[(ulong)(STACK_OFFSET_TYPE(ptr))];
+
+	PC = regs->regs[RISCV64_REGS_EPC];
+	RA = regs->regs[RISCV64_REGS_RA];
+	SP = regs->regs[RISCV64_REGS_SP];
+
+	switch (mode) {
+	case USER_MODE:
+		fprintf(fp,
+		    "     PC: %016lx   RA: %016lx   SP: %016lx\n"
+		    "     ORIG_A0: %016lx   SYSCALLNO: %016lx\n",
+		    PC, RA, SP, regs->regs[35], regs->regs[17]);
+
+		break;
+
+	case KERNEL_MODE:
+		fprintf(fp, "     PC: %016lx  ", PC);
+		if (is_kernel_text(PC) && (sp = value_search(PC, &offset))) {
+			fprintf(fp, "[%s", sp->name);
+			if (offset)
+				fprintf(fp, (*gdb_output_radix == 16) ?
+					"+0x%lx" : "+%ld", offset);
+			fprintf(fp, "]\n");
+		} else
+			fprintf(fp, "[unknown or invalid address]\n");
+
+		fprintf(fp, "     RA: %016lx  ", RA);
+		if (is_kernel_text(RA) && (sp = value_search(RA, &offset))) {
+			fprintf(fp, "[%s", sp->name);
+			if (offset)
+				fprintf(fp, (*gdb_output_radix == 16) ?
+					"+0x%lx" : "+%ld", offset);
+			fprintf(fp, "]\n");
+		} else
+			fprintf(fp, "[unknown or invalid address]\n");
+
+		fprintf(fp, "     SP: %016lx  CAUSE: %016lx\n",
+			SP, regs->regs[RISCV64_REGS_CAUSE]);
+
+		break;
+	}
+
+	riscv64_dump_pt_regs(regs, fp, 1);
+
+}
+
+static int
+riscv64_is_kernel_exception_frame(struct bt_info *bt, ulong stkptr)
+{
+	struct riscv64_register *regs;
+
+	if (stkptr > STACKSIZE() && !INSTACK(stkptr, bt)) {
+		if (CRASHDEBUG(1))
+			error(WARNING, "stkptr: %lx is outside the kernel stack range\n", stkptr);
+		return FALSE;
+	}
+
+	regs = (struct riscv64_register *)&bt->stackbuf[(ulong)(STACK_OFFSET_TYPE(stkptr))];
+
+	if (INSTACK(regs->regs[RISCV64_REGS_SP], bt) &&
+	    INSTACK(regs->regs[RISCV64_REGS_FP], bt) &&
+	    is_kernel_text(regs->regs[RISCV64_REGS_RA]) &&
+	    is_kernel_text(regs->regs[RISCV64_REGS_EPC]) &&
+	    ((regs->regs[RISCV64_REGS_STATUS] >> 8) & 0x1) && // sstatus.SPP != 0
+	    !((regs->regs[RISCV64_REGS_CAUSE] >> 63) & 0x1 ) && // scause.Interrupt != 1
+	    !(regs->regs[RISCV64_REGS_CAUSE] == 0x00000008UL)) { // scause != ecall from U-mode
+
+		return TRUE;
+	}
+
+	return FALSE;
+}
+
+static int
+riscv64_dump_kernel_eframes(struct bt_info *bt)
+{
+	ulong ptr;
+	int count;
+
+	/*
+	 * use old_regs to avoid the identical contiguous kernel exception frames
+	 * created by Linux handle_exception() path ending at riscv_crash_save_regs()
+	 */
+	struct riscv64_register *regs, *old_regs;
+
+	count = 0;
+	old_regs = NULL;
+
+	for (ptr = bt->stackbase; ptr < bt->stacktop - SIZE(pt_regs); ptr++) {
+
+		regs = (struct riscv64_register *)&bt->stackbuf[(ulong)(STACK_OFFSET_TYPE(ptr))];
+
+		if (riscv64_is_kernel_exception_frame(bt, ptr)){
+			if (!old_regs || (old_regs &&
+			    memcmp(old_regs, regs, sizeof(struct riscv64_register))) != 0){
+				old_regs = regs;
+				fprintf(fp, "\nKERNEL-MODE EXCEPTION FRAME AT: %lx\n", ptr);
+				riscv64_print_exception_frame(bt, ptr, KERNEL_MODE);
+				count++;
+			}
+		}
+	}
+
+	return count;
+}
+
+static int
+riscv64_eframe_search(struct bt_info *bt)
+{
+	ulong ptr;
+	int count, c;
+	struct machine_specific *ms = machdep->machspec;
+
+	if (bt->flags & BT_EFRAME_SEARCH2) {
+		if (!(machdep->flags & IRQ_STACKS))
+			error(FATAL, "IRQ stacks do not exist in this kernel\n");
+
+		for (c = 0; c < kt->cpus; c++) {
+			if ((bt->flags & BT_CPUMASK) &&
+			    !(NUM_IN_BITMAP(bt->cpumask, c)))
+				continue;
+
+			fprintf(fp, "CPU %d IRQ STACK: ", c);
+			bt->stackbase = ms->irq_stacks[c];
+			bt->stacktop = bt->stackbase + ms->irq_stack_size;
+			alter_stackbuf(bt);
+
+			count = riscv64_dump_kernel_eframes(bt);
+
+			if (count)
+				fprintf(fp, "\n");
+			else
+				fprintf(fp, "(none found)\n\n");
+		}
+
+		return 0;
+	}
+
+	count = riscv64_dump_kernel_eframes(bt);
+
+	if (is_kernel_thread(bt->tc->task))
+		return count;
+
+	ptr = bt->stacktop - SIZE(pt_regs);
+	fprintf(fp, "%sUSER-MODE EXCEPTION FRAME AT: %lx\n", count++ ? "\n" : "", ptr);
+	riscv64_print_exception_frame(bt, ptr, USER_MODE);
+
+	return count;
 }
 
 #else /* !RISCV64 */

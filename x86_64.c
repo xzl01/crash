@@ -3342,6 +3342,13 @@ x86_64_print_stack_entry(struct bt_info *bt, FILE *ofp, int level,
 
 	bt->call_target = name;
 
+	/*
+	 * The caller check below does not work correctly for some kernels,
+	 * so skip it if ORC unwinder is available.
+	 */
+	if (machdep->flags & ORC)
+		return result;
+
 	if (is_direct_call_target(bt)) {
 		if (CRASHDEBUG(2))
 			fprintf(ofp, "< enable BT_CHECK_CALLER for %s >\n", 
@@ -3834,11 +3841,12 @@ in_exception_stack:
 		up -= 1;
                 bt->instptr = *up;
 		/*
-		 *  No exception frame when coming from do_softirq_own_stack
-		 *  or call_softirq.
+		 *  No exception frame when coming from do_softirq,
+		 *  do_softirq_own_stack or call_softirq.
 		 */
 		if ((sp = value_search(bt->instptr, &offset)) && 
-		    (STREQ(sp->name, "do_softirq_own_stack") || STREQ(sp->name, "call_softirq")))
+		    (STREQ(sp->name, "do_softirq") || STREQ(sp->name, "do_softirq_own_stack") ||
+		     STREQ(sp->name, "call_softirq")))
 			irq_eframe = 0;
                 bt->frameptr = 0;
                 done = FALSE;
@@ -6615,13 +6623,14 @@ x86_64_irq_eframe_link_init(void)
 
 /*
  *  Calculate and verify the IRQ exception frame location from the 
- *  stack reference at the top of the IRQ stack, possibly adjusting
- *  the ms->irq_eframe_link value.
+ *  stack reference at the top of the IRQ stack, keep ms->irq_eframe_link
+ *  as the most likely value, and try a few sizes around it.
  */
 static ulong
 x86_64_irq_eframe_link(ulong stkref, struct bt_info *bt, FILE *ofp)
 {
 	ulong irq_eframe;
+	int i, try[] = { 8, -8, 16, -16 };
 
 	if (x86_64_exception_frame(EFRAME_VERIFY, stkref, 0, bt, ofp))
 		return stkref;
@@ -6631,9 +6640,9 @@ x86_64_irq_eframe_link(ulong stkref, struct bt_info *bt, FILE *ofp)
 	if (x86_64_exception_frame(EFRAME_VERIFY, irq_eframe, 0, bt, ofp))
 		return irq_eframe;
 
-	if (x86_64_exception_frame(EFRAME_VERIFY, irq_eframe+8, 0, bt, ofp)) {
-		machdep->machspec->irq_eframe_link -= 8;
-		return (irq_eframe + 8);
+	for (i = 0; i < sizeof(try)/sizeof(int); i++) {
+		if (x86_64_exception_frame(EFRAME_VERIFY, irq_eframe+try[i], 0, bt, ofp))
+			return (irq_eframe + try[i]);
 	}
 
 	return irq_eframe;
@@ -8649,7 +8658,7 @@ x86_64_get_framesize(struct bt_info *bt, ulong textaddr, ulong rsp, char *stack_
 				if (CRASHDEBUG(1))
 					fprintf(fp, "rsp: %lx prev_sp: %lx framesize: %d\n",
 							rsp, prev_sp, framesize);
-			} else if ((korc->sp_reg == ORC_REG_BP) && bt->bptr) {
+			} else if ((korc->sp_reg == ORC_REG_BP) && bt->bptr && INSTACK(bt->bptr, bt)) {
 				prev_sp = bt->bptr + korc->sp_offset;
 				framesize = (prev_sp - (rsp + 8) - 8);
 				if (CRASHDEBUG(1))

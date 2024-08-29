@@ -629,7 +629,8 @@ kaslr_init(void)
 	char *string;
 
 	if ((!machine_type("X86_64") && !machine_type("ARM64") && !machine_type("X86") &&
-	    !machine_type("S390X") && !machine_type("RISCV64")) || (kt->flags & RELOC_SET))
+	    !machine_type("S390X") && !machine_type("RISCV64") && !machine_type("LOONGARCH64")) ||
+			(kt->flags & RELOC_SET))
 		return;
 
 	if (!kt->vmcoreinfo._stext_SYMBOL &&
@@ -794,8 +795,8 @@ store_symbols(bfd *abfd, int dynamic, void *minisyms, long symcount,
 					fromend, size, store);
 		} else if (!(kt->flags & RELOC_SET))
 			kt->flags |= RELOC_FORCE;
-	} else if (machine_type("X86_64") || machine_type("ARM64") ||
-		   machine_type("S390X") || machine_type("RISCV64")) {
+	} else if (machine_type("X86_64") || machine_type("ARM64") || machine_type("S390X") ||
+			machine_type("RISCV64") || machine_type("LOONGARCH64")) {
 		if ((kt->flags2 & RELOC_AUTO) && !(kt->flags & RELOC_SET))
 			derive_kaslr_offset(abfd, dynamic, from,
 				fromend, size, store);
@@ -867,7 +868,8 @@ store_sysmap_symbols(void)
                         strerror(errno));
 
 	if (!machine_type("X86") && !machine_type("X86_64") &&
-	    !machine_type("ARM64") && !machine_type("S390X"))
+	    !machine_type("ARM64") && !machine_type("S390X") &&
+	    !machine_type("LOONGARCH64"))
 		kt->flags &= ~RELOC_SET;
 
 	first = 0;
@@ -2976,9 +2978,11 @@ store_module_kallsyms_v2(struct load_module *lm, int start, int curr,
 		/*
 		 * On ARM/ARM64 we have linker mapping symbols like '$a'
 		 * or '$x' for ARM64, and '$d'.
+		 * On LoongArch we have linker mapping symbols like '.L'
+		 * or 'L0'.
 		 * Make sure that these don't end up into our symbol list.
 		 */
-		if ((machine_type("ARM") || machine_type("ARM64")) &&
+		if ((machine_type("ARM") || machine_type("ARM64") || machine_type("LOONGARCH64")) &&
 		    !machdep->verify_symbol(nameptr, ec->st_value, ec->st_info))
 			continue;
 
@@ -4229,6 +4233,11 @@ is_kernel(char *file)
 				goto bailout;
 			break;
 
+		case EM_LOONGARCH:
+			if (machine_type_mismatch(file, "LOONGARCH64", NULL, 0))
+				goto bailout;
+			break;
+
 		default:
 			if (machine_type_mismatch(file, "(unknown)", NULL, 0))
 				goto bailout;
@@ -4280,6 +4289,11 @@ is_kernel(char *file)
 
 		case EM_RISCV:
 			if (machine_type_mismatch(file, "RISCV64", NULL, 0))
+				goto bailout;
+			break;
+
+		case EM_LOONGARCH:
+			if (machine_type_mismatch(file, "LOONGARCH64", NULL, 0))
 				goto bailout;
 			break;
 
@@ -4545,6 +4559,11 @@ is_shared_object(char *file)
 
 		case EM_RISCV:
 			if (machine_type("RISCV64"))
+				return TRUE;
+			break;
+
+		case EM_LOONGARCH:
+			if (machine_type("LOONGARCH64"))
 				return TRUE;
 			break;
 		}
@@ -5558,10 +5577,13 @@ value_search_module_6_4(ulong value, ulong *offset)
 			continue;
 
 		for_each_mod_mem_type(t) {
+			if (!lm->symtable[t])
+				continue;
+
 			sp = lm->symtable[t];
 			sp_end = lm->symend[t];
 
-			if (value < sp->value)
+			if (value < sp->value || value > sp_end->value)
 				continue;
 
 			splast = NULL;
@@ -5645,6 +5667,9 @@ retry:
 
 		if (sp->value > value)   /* invalid -- between modules */
 			break;
+
+		if (sp_end->value < value) /* not within the module */
+			continue;
 
 	       /*
 		*  splast will contain the last module symbol encountered.
@@ -9795,6 +9820,10 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(task_struct_thread_esp));
         fprintf(fp, "        task_struct_thread_ksp: %ld\n",
                 OFFSET(task_struct_thread_ksp));
+		fprintf(fp, "      task_struct_thread_reg01: %ld\n",
+				OFFSET(task_struct_thread_reg01));
+		fprintf(fp, "      task_struct_thread_reg03: %ld\n",
+				OFFSET(task_struct_thread_reg03));
         fprintf(fp, "      task_struct_thread_reg29: %ld\n",
                 OFFSET(task_struct_thread_reg29));
         fprintf(fp, "      task_struct_thread_reg31: %ld\n",
@@ -9899,6 +9928,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(mnt_namespace_root));
 	fprintf(fp, "            mnt_namespace_list: %ld\n",
 		OFFSET(mnt_namespace_list));
+	fprintf(fp, "          mnt_namespace_mounts: %ld\n", OFFSET(mnt_namespace_mounts));
+	fprintf(fp, "       mnt_namespace_nr_mounts: %ld\n", OFFSET(mnt_namespace_nr_mounts));
 
 	fprintf(fp, "             pid_namespace_idr: %ld\n",
 		OFFSET(pid_namespace_idr));
@@ -10304,6 +10335,7 @@ dump_offset_table(char *spec, ulong makestruct)
                 OFFSET(page_active));
         fprintf(fp, "            page_compound_head: %ld\n",
                 OFFSET(page_compound_head));
+        fprintf(fp, "                  page_private: %ld\n", OFFSET(page_private));
 
 	fprintf(fp, "        trace_print_flags_mask: %ld\n",
 		OFFSET(trace_print_flags_mask));
@@ -10330,6 +10362,7 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(swap_info_struct_inuse_pages));
         fprintf(fp, "swap_info_struct_old_block_size: %ld\n",
 		OFFSET(swap_info_struct_old_block_size));
+        fprintf(fp, "         swap_info_struct_bdev: %ld\n", OFFSET(swap_info_struct_bdev));
 	fprintf(fp, "         block_device_bd_inode: %ld\n",
 		OFFSET(block_device_bd_inode));
 	fprintf(fp, "          block_device_bd_list: %ld\n",
@@ -10553,6 +10586,7 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(mount_mnt_devname));
 	fprintf(fp, "                     mount_mnt: %ld\n",
 		OFFSET(mount_mnt));
+	fprintf(fp, "                mount_mnt_node: %ld\n", OFFSET(mount_mnt_node));
 	fprintf(fp, "                namespace_root: %ld\n",
 			OFFSET(namespace_root));
 	fprintf(fp, "                namespace_list: %ld\n",
@@ -11359,6 +11393,8 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(gendisk_part0));
 	fprintf(fp, "                 gendisk_queue: %ld\n",
 		OFFSET(gendisk_queue));
+	fprintf(fp, "          gendisk_private_data: %ld\n", OFFSET(gendisk_private_data));
+
 	fprintf(fp, "                 hd_struct_dev: %ld\n",
 		OFFSET(hd_struct_dev));
 	fprintf(fp, "             hd_struct_dkstats: %ld\n",
@@ -11517,6 +11553,7 @@ dump_offset_table(char *spec, ulong makestruct)
 		OFFSET(log_level));
 	fprintf(fp, "               log_flags_level: %ld\n",
 		OFFSET(log_flags_level));
+	fprintf(fp, "                 log_caller_id: %ld\n", OFFSET(log_caller_id));
 
 	fprintf(fp, "               printk_info_seq: %ld\n", OFFSET(printk_info_seq));
 	fprintf(fp, "           printk_info_ts_nseq: %ld\n", OFFSET(printk_info_ts_nsec));
@@ -11764,6 +11801,14 @@ dump_offset_table(char *spec, ulong makestruct)
 	fprintf(fp, "           maple_range_64_slot: %ld\n", OFFSET(maple_range_64_slot));
 	fprintf(fp, "            maple_metadata_end: %ld\n", OFFSET(maple_metadata_end));
 	fprintf(fp, "            maple_metadata_gap: %ld\n", OFFSET(maple_metadata_gap));
+
+	fprintf(fp, "                 zram_mem_pool: %ld\n", OFFSET(zram_mem_pool));
+	fprintf(fp, "               zram_compressor: %ld\n", OFFSET(zram_compressor));
+	fprintf(fp, "                zram_comp_algs: %ld\n", OFFSET(zram_comp_algs));
+	fprintf(fp, "        zram_table_entry_flags: %ld\n", OFFSET(zram_table_entry_flags));
+	fprintf(fp, "            zs_pool_size_class: %ld\n", OFFSET(zs_pool_size_class));
+	fprintf(fp, "               size_class_size: %ld\n", OFFSET(size_class_size));
+	fprintf(fp, "                   zspage_huge: %ld\n", OFFSET(zspage_huge));
 
 	fprintf(fp, "\n                    size_table:\n");
 	fprintf(fp, "                          page: %ld\n", SIZE(page));
@@ -13283,7 +13328,7 @@ add_symbol_file_kallsyms(struct load_module *lm, struct gnu_request *req)
 			shift_string_right(req->buf, strlen(buf));
 			BCOPY(buf, req->buf, strlen(buf));
 			retval = TRUE;
-		} else {
+		} else if (lm->mod_init_module_ptr || !STRNEQ(section_name, ".init.")) {
 			sprintf(buf, " -s %s 0x%lx", section_name, section_vaddr);
 			while ((len + strlen(buf)) >= buflen) {
 				RESIZEBUF(req->buf, buflen, buflen * 2);

@@ -519,7 +519,7 @@ vm_init(void)
         	"swap_info_struct", "old_block_size");
 	MEMBER_OFFSET_INIT(swap_info_struct_bdev, "swap_info_struct", "bdev");
 
-	MEMBER_OFFSET_INIT(zspoll_size_class, "zs_pool", "size_class");
+	MEMBER_OFFSET_INIT(zs_pool_size_class, "zs_pool", "size_class");
 	MEMBER_OFFSET_INIT(size_class_size, "size_class", "size");
 
 	MEMBER_OFFSET_INIT(block_device_bd_inode, "block_device", "bd_inode");
@@ -8486,7 +8486,7 @@ dump_kmeminfo(void)
 	ulong hugetlb_total_pages, hugetlb_total_free_pages = 0;
 	int done_hugetlb_calc = 0; 
 	long nr_file_pages, nr_slab;
-	ulong swapper_space_nrpages;
+	long swapper_space_nrpages;
 	ulong pct;
 	uint tmp;
 	struct meminfo meminfo;
@@ -8609,7 +8609,9 @@ dump_kmeminfo(void)
 		char *swapper_space = GETBUF(SIZE(address_space));
 
 		swapper_space_nrpages = 0;
-		if (symbol_exists("nr_swapper_spaces") &&
+		if (dump_vm_stat("NR_SWAPCACHE", &swapper_space_nrpages, 0)) {
+			;
+		} else if (symbol_exists("nr_swapper_spaces") &&
 			(len = get_array_length("nr_swapper_spaces",
 				NULL, 0))) {
 			char *nr_swapper_space =
@@ -17218,11 +17220,20 @@ first_vmalloc_address(void)
 {
 	static ulong vmalloc_start = 0;
         ulong vm_struct, vmap_area;
+	char *vmalloc_start_string;
 
 	if (DUMPFILE() && vmalloc_start)
 		return vmalloc_start;
 
-	if (vt->flags & USE_VMAP_AREA) {
+	/*
+	 * 'vmap_area_list' and 'vmlist' in Linux 6.9 and later kernels might be
+	 * empty, prefer NUMBER(VMALLOC_START) if exported in vmcoreinfo.
+	 */
+	vmalloc_start_string = pc->read_vmcoreinfo("NUMBER(VMALLOC_START)");
+	if (vmalloc_start_string) {
+		vmalloc_start = htol(vmalloc_start_string, QUIET, NULL);
+		free(vmalloc_start_string);
+	} else if (vt->flags & USE_VMAP_AREA) {
 		get_symbol_data("vmap_area_list", sizeof(void *), &vmap_area);
 		if (!vmap_area)
 			return 0;
